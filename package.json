@@ -1,0 +1,58 @@
+{
+	"name": "n8n-nodes-refractr",
+	"version": "0.1.0",
+	"description": "n8n node for Refractr: extract typed fields from invoices, delivery notes and other documents, with a confidence score per field to route doubtful results to review.",
+	"license": "MIT",
+	"homepage": "https://refractr.io",
+	"keywords": [
+		"n8n-community-node-package",
+		"n8n",
+		"refractr",
+		"document extraction",
+		"invoice",
+		"ocr",
+		"idp",
+		"accounts payable"
+	],
+	"author": {
+		"name": "Sepp Beld",
+		"email": "sepp@refractr.io"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Refractr-io/n8n-nodes-refractr.git"
+	},
+	"scripts": {
+		"build": "n8n-node build",
+		"build:watch": "tsc --watch",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"release": "n8n-node release",
+		"prepublishOnly": "n8n-node prerelease",
+		"test": "n8n-node build && node --test test/*.test.mjs"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": true,
+		"credentials": [
+			"dist/credentials/RefractrApi.credentials.js"
+		],
+		"nodes": [
+			"dist/nodes/Refractr/Refractr.node.js"
+		]
+	},
+	"devDependencies": {
+		"@n8n/node-cli": "*",
+		"eslint": "9.32.0",
+		"prettier": "3.6.2",
+		"release-it": "^21.1.0",
+		"typescript": "5.9.2"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	}
+}

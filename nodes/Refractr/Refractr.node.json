@@ -1,0 +1,19 @@
+{
+	"node": "n8n-nodes-refractr.refractr",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Finance & Accounting", "Productivity", "Utility"],
+	"alias": ["invoice", "ocr", "pdf", "document", "extract", "parse", "scan", "bill of lading", "delivery note"],
+	"resources": {
+		"credentialDocumentation": [
+			{
+				"url": "https://refractr.io/docs/#authentication"
+			}
+		],
+		"primaryDocumentation": [
+			{
+				"url": "https://refractr.io/docs/"
+			}
+		]
+	}
+}
