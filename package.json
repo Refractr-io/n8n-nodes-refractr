@@ -33,7 +33,8 @@
 		"test": "n8n-node build && node --test test/*.test.mjs"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"!dist/tsconfig.tsbuildinfo"
 	],
 	"n8n": {
 		"n8nNodesApiVersion": 1,
