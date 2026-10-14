@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-refractr",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "n8n node for Refractr: extract typed fields from invoices, delivery notes and other documents, with a confidence score per field to route doubtful results to review.",
 	"license": "MIT",
 	"homepage": "https://refractr.io",
