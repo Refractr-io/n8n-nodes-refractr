@@ -4,6 +4,8 @@ This is an n8n community node for [Refractr](https://refractr.io), a document ex
 
 The node sends results it's confident about to one output and doubtful ones to a **Needs Review** output, so only those go to a person.
 
+It also prepares files before upload, in n8n and at no cost: it takes a binary field, a URL or a base64 string, sends only the PDF pages you pick, shrinks large photos and scans, and sends text and HTML files as text.
+
 [n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/sustainable-use-license/) workflow automation platform.
 
 [Installation](#installation) · [Operations](#operations) · [Credentials](#credentials) · [Usage](#usage) · [Compatibility](#compatibility) · [Resources](#resources)
@@ -16,7 +18,7 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 **Extraction**
 
-- **Extract**: extract fields from a file (PDF, Word, OpenDocument, or a scan or photo) or from text.
+- **Extract**: extract fields from a file (PDF, Word, OpenDocument, a scan or photo, or a text or HTML file), given as a binary field, a URL or a base64 string, or from text.
 - **Get Job**: get the result of an extraction by its job ID.
 
 **Account**
@@ -49,6 +51,27 @@ For lists of objects, such as invoice line items, set **Schema Definition** to *
 ```
 
 Dates always come back as `YYYY-MM-DD`, and amounts as bare numbers (`1249.0`, not `"EUR 1,249.00"`).
+
+### Input
+
+Set **Input** to where the document comes from:
+
+- **File**: a binary field from an earlier node, such as Gmail, Google Drive or Read Files from Disk.
+- **URL**: a link to the file, which n8n downloads.
+- **Base64 String**: the file as base64, or as a data URL (`data:application/pdf;base64,...`).
+- **Text**: plain text, such as an email body.
+
+The file type is detected from the file's content, so a missing or wrong MIME type doesn't matter. Text and HTML files (`.txt`, `.csv`, `.html` and the like) are sent as text; HTML is turned into plain text first. A file downloaded from a URL or decoded from base64 is added to the output as binary field `data`, so a reviewer can open it.
+
+### PDF pages
+
+Set **Options > PDF Pages** to send only some pages of a PDF, such as `1-3, 5`, `2-` (page 2 to the end) or `1, last`. The other pages are removed in n8n before upload, so a long PDF uploads faster and fits within the page limit. Pages a PDF doesn't have are skipped, so `1-3` also works on a two-page PDF. Images that only the removed pages use are left out too.
+
+Encrypted PDFs that use object streams can't be split; remove the option to send them whole.
+
+### Large images
+
+Add **Options > Shrink Large Images** to shrink JPEG and PNG images over 2000 pixels on their longest side, such as phone photos and 300 DPI scans, to 2000 pixels before upload. Refractr reads images at that size anyway, so the result is the same and the upload is smaller: a 12-megapixel photo goes from about 2 MB to about 0.7 MB. Photos are turned upright according to their EXIF orientation. Smaller images and other formats are sent as they are.
 
 ### Scans and photos (OCR)
 
@@ -85,7 +108,7 @@ Turn Simplify off to get the full API response, including `validation.warnings` 
 
 ### Large files
 
-An extraction normally waits for its result, up to 30 seconds. For large scans, set **Options > Mode** to **Submit and Poll**. Files can be up to about 7 MB, PDFs up to 20 pages (10 with OCR). See [limits](https://refractr.io/docs/#documents).
+An extraction normally waits for its result, up to 30 seconds. For large scans, set **Options > Mode** to **Submit and Poll**. Files can be up to about 7 MB, PDFs up to 20 pages (10 with OCR); use **PDF Pages** and **Shrink Large Images** to stay within them. See [limits](https://refractr.io/docs/#documents).
 
 ### Rate limits
 
@@ -109,6 +132,8 @@ npm run dev    # starts n8n on http://localhost:5678 with this node loaded
 npm test       # builds, then runs the tests in test/ against a mocked API
 npm run lint
 ```
+
+`npm run build` compiles with `n8n-node build` and then bundles the node with esbuild, so the published package has no runtime dependencies. The bundle includes [pako](https://github.com/nodeca/pako) (zlib decompression) and [jpeg-js](https://github.com/jpeg-js/jpeg-js) (JPEG decoding and encoding); their licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). PDF page selection and PNG decoding are written in this repository.
 
 ## Resources
 

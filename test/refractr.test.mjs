@@ -6,6 +6,7 @@ import { test } from 'node:test';
 const require = createRequire(import.meta.url);
 const { Refractr } = require('../dist/nodes/Refractr/Refractr.node.js');
 const { buildTemplate } = require('../dist/nodes/Refractr/GenericFunctions.js');
+const { countPdfPages } = require('../dist/nodes/Refractr/files/PdfPages.js');
 
 const NODE = {
 	id: '1',
@@ -52,9 +53,10 @@ function success(data, confidence, extra = {}) {
 }
 
 /** Runs the node with mocked n8n helpers. `responses` are returned in order, one per HTTP call. */
-async function run({ params = {}, items, responses, continueOnFail = false }) {
+async function run({ params = {}, items, responses, continueOnFail = false, download }) {
 	const parameters = { ...DEFAULTS, ...params };
 	const calls = [];
+	const downloads = [];
 	const queue = [...responses];
 	items ??= [
 		{
@@ -87,12 +89,22 @@ async function run({ params = {}, items, responses, continueOnFail = false }) {
 				if (!next) throw new Error(`Unexpected request: ${options.method} ${options.url}`);
 				return next;
 			},
+			async httpRequest(options) {
+				downloads.push(options);
+				if (!download) throw new Error(`Unexpected download: ${options.url}`);
+				return download;
+			},
+			prepareBinaryData: async (data, fileName, mimeType) => ({
+				data: data.toString('base64'),
+				fileName,
+				mimeType,
+			}),
 			assertBinaryData: (i, name) => items[i].binary[name],
 			getBinaryDataBuffer: async (i, name) => Buffer.from(items[i].binary[name].data, 'base64'),
 		},
 	};
 	const output = await new Refractr().execute.call(context);
-	return { output, calls };
+	return { output, calls, downloads };
 }
 
 test('builds a nested template from fields', () => {
@@ -425,4 +437,128 @@ test('account: credit balance and usage', async () => {
 	});
 	assert.equal(credits.calls[0].url, 'https://api.refractr.io/api/v1/billing/credits/');
 	assert.equal(credits.output[0][0].json.balance, 1234);
+});
+
+const CONFIDENT = success(
+	{ invoice_number: 'INV-1', total_amount: 1 },
+	{ invoice_number: 0.99, total_amount: 0.99 },
+);
+
+/** A PDF with `pages` empty pages. */
+function pdfWithPages(pages) {
+	const objects = [
+		'<< /Type /Catalog /Pages 2 0 R >>',
+		`<< /Type /Pages /Kids [${[...Array(pages).keys()].map((i) => `${i + 3} 0 R`).join(' ')}] /Count ${pages} >>`,
+		...Array(pages).fill('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>'),
+	];
+	let body = '%PDF-1.4\n';
+	const offsets = objects.map((object, i) => {
+		const offset = body.length;
+		body += `${i + 1} 0 obj\n${object}\nendobj\n`;
+		return offset;
+	});
+	const xref = body.length;
+	body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f\r\n`;
+	for (const offset of offsets) body += `${String(offset).padStart(10, '0')} 00000 n\r\n`;
+	body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+	return Buffer.from(body, 'latin1');
+}
+
+test('URL input: downloads the file, sends it, and adds it to the output', async () => {
+	const { calls, downloads, output } = await run({
+		params: { inputType: 'url', url: ' https://example.com/files/invoice%201.pdf ' },
+		items: [{ json: {} }],
+		download: {
+			body: Buffer.from('%PDF-1.4 test'),
+			headers: { 'content-type': 'application/pdf' },
+		},
+		responses: [CONFIDENT],
+	});
+	assert.equal(downloads[0].url, 'https://example.com/files/invoice%201.pdf');
+	assert.equal(downloads[0].encoding, 'arraybuffer');
+	assert.equal(Buffer.from(calls[0].body.document, 'base64').toString(), '%PDF-1.4 test');
+	assert.equal(calls[0].body.ocr, false);
+	const file = output[0][0].binary.data;
+	assert.equal(file.fileName, 'invoice 1.pdf');
+	assert.equal(file.mimeType, 'application/pdf');
+
+	await assert.rejects(
+		run({
+			params: { inputType: 'url', url: 'ftp://example.com/a.pdf' },
+			items: [{ json: {} }],
+			responses: [],
+		}),
+		/not an http or https link/,
+	);
+});
+
+test('base64 input: accepts plain base64 and data URLs, and detects images', async () => {
+	const pdf = await run({
+		params: { inputType: 'base64', base64: Buffer.from('%PDF-1.4 test').toString('base64') },
+		items: [{ json: {} }],
+		responses: [CONFIDENT],
+	});
+	assert.equal(Buffer.from(pdf.calls[0].body.document, 'base64').toString(), '%PDF-1.4 test');
+	assert.equal(pdf.output[0][0].binary.data.fileName, 'document.pdf');
+
+	const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+	const image = await run({
+		params: {
+			inputType: 'base64',
+			base64: `data:image/jpeg;base64,${jpegBytes.toString('base64')}`,
+		},
+		items: [{ json: {} }],
+		responses: [CONFIDENT],
+	});
+	assert.equal(image.calls[0].body.ocr, true, 'images go to OCR, detected from their content');
+
+	await assert.rejects(
+		run({
+			params: { inputType: 'base64', base64: 'not base64!' },
+			items: [{ json: {} }],
+			responses: [],
+		}),
+		/not base64/,
+	);
+});
+
+test('text and HTML files are sent as text', async () => {
+	const html = Buffer.from(
+		'<html><body><p>Invoice #2847</p><p>Total &euro;10.00</p></body></html>',
+	);
+	const { calls } = await run({
+		items: [
+			{ json: {}, binary: { data: { data: html.toString('base64'), mimeType: 'text/html' } } },
+		],
+		responses: [CONFIDENT],
+	});
+	assert.equal(calls[0].body.document_text, 'Invoice #2847\nTotal €10.00');
+	assert.equal(calls[0].body.document, undefined);
+	assert.equal(calls[0].body.ocr, undefined);
+});
+
+test('PDF Pages: only the selected pages are uploaded', async () => {
+	const pdf = pdfWithPages(6);
+	const { calls } = await run({
+		params: { options: { pages: '2-3' } },
+		items: [
+			{ json: {}, binary: { data: { data: pdf.toString('base64'), mimeType: 'application/pdf' } } },
+		],
+		responses: [CONFIDENT],
+	});
+	assert.equal(countPdfPages(Buffer.from(calls[0].body.document, 'base64')), 2);
+
+	await assert.rejects(
+		run({
+			params: { options: { pages: '9' } },
+			items: [
+				{
+					json: {},
+					binary: { data: { data: pdf.toString('base64'), mimeType: 'application/pdf' } },
+				},
+			],
+			responses: [],
+		}),
+		/Could not select pages "9": None of the pages/,
+	);
 });

@@ -2,6 +2,8 @@ import type { INodeProperties } from 'n8n-workflow';
 
 const showForExtract = { resource: ['extraction'], operation: ['extract'] };
 const showForResults = { resource: ['extraction'], operation: ['extract', 'getJob'] };
+const showForFiles = { ...showForExtract, inputType: ['binary', 'url', 'base64'] };
+const showForFileOptions = { '/operation': ['extract'], '/inputType': ['binary', 'url', 'base64'] };
 
 export const extractionOperations: INodeProperties[] = [
 	{
@@ -40,14 +42,25 @@ export const extractionFields: INodeProperties[] = [
 		displayOptions: { show: showForExtract },
 		options: [
 			{
+				name: 'Base64 String',
+				value: 'base64',
+				description: 'A file encoded as base64, or a data URL',
+			},
+			{
 				name: 'File',
 				value: 'binary',
-				description: 'A PDF, Word or OpenDocument file, or a scan or photo',
+				description:
+					'A file from an earlier node: a PDF, Word or OpenDocument file, a scan or photo, or a text or HTML file',
 			},
 			{
 				name: 'Text',
 				value: 'text',
 				description: 'Plain text, such as an email body',
+			},
+			{
+				name: 'URL',
+				value: 'url',
+				description: 'A link to a file, which n8n downloads',
 			},
 		],
 		default: 'binary',
@@ -60,6 +73,29 @@ export const extractionFields: INodeProperties[] = [
 		default: 'data',
 		displayOptions: { show: { ...showForExtract, inputType: ['binary'] } },
 		hint: 'The name of the input binary field containing the file',
+	},
+	{
+		displayName: 'URL',
+		name: 'url',
+		type: 'string',
+		required: true,
+		default: '',
+		placeholder: 'e.g. https://example.com/invoice.pdf',
+		displayOptions: { show: { ...showForExtract, inputType: ['url'] } },
+		description:
+			'The link to download the file from. The file is added to the output as binary field data, so a reviewer can open it.',
+	},
+	{
+		displayName: 'Base64 String',
+		name: 'base64',
+		type: 'string',
+		typeOptions: { rows: 3 },
+		required: true,
+		default: '',
+		placeholder: 'e.g. JVBERi0xLjcK...',
+		displayOptions: { show: { ...showForExtract, inputType: ['base64'] } },
+		description:
+			'The file as base64, or as a data URL such as data:application/pdf;base64,JVBERi0... The file type is detected from its content, and the file is added to the output as binary field data.',
 	},
 	{
 		displayName: 'Text',
@@ -75,7 +111,7 @@ export const extractionFields: INodeProperties[] = [
 		displayName: 'OCR',
 		name: 'ocr',
 		type: 'options',
-		displayOptions: { show: { ...showForExtract, inputType: ['binary'] } },
+		displayOptions: { show: showForFiles },
 		options: [
 			{
 				name: 'Auto',
@@ -275,6 +311,25 @@ export const extractionFields: INodeProperties[] = [
 					},
 				],
 				default: 'sync',
+			},
+			{
+				displayName: 'PDF Pages',
+				name: 'pages',
+				type: 'string',
+				displayOptions: { show: showForFileOptions },
+				default: '',
+				placeholder: 'e.g. 1-3, 5',
+				description:
+					'Which pages of a PDF to send, such as 1-3, 5 or 2- (page 2 to the end) or last. The other pages are removed before upload, so they take no upload time and do not count toward the page limit. Pages a PDF does not have are skipped.',
+			},
+			{
+				displayName: 'Shrink Large Images',
+				name: 'shrinkImages',
+				type: 'boolean',
+				displayOptions: { show: showForFileOptions },
+				default: true,
+				description:
+					'Whether to shrink JPEG and PNG images over 2000 pixels on their longest side, such as phone photos and 300 DPI scans, to 2000 pixels before upload. Refractr reads images at that size anyway, so this saves upload time without changing the result.',
 			},
 			{
 				displayName: 'Timeout (Seconds)',

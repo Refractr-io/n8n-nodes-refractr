@@ -1,4 +1,5 @@
 import type {
+	IBinaryData,
 	IDataObject,
 	IExecuteFunctions,
 	INodeExecutionData,
@@ -10,6 +11,10 @@ import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import { accountFields, accountOperations } from './descriptions/AccountDescription';
 import { extractionFields, extractionOperations } from './descriptions/ExtractionDescription';
 import type { ExtractionResult, FieldDefinition } from './GenericFunctions';
+import type { FileType } from './files/FileType';
+import { decodeText, detectFileType, htmlToText } from './files/FileType';
+import { downscaleImage, MAX_IMAGE_SIDE } from './files/Images';
+import { selectPdfPages } from './files/PdfPages';
 import {
 	apiGet,
 	buildTemplate,
@@ -92,12 +97,13 @@ export class Refractr implements INodeType {
 				const options = this.getNodeParameter('options', i, {}) as IDataObject;
 				const timeoutSeconds = (options.pollTimeout as number | undefined) ?? 120;
 				let result: ExtractionResult;
+				let file: IBinaryData | undefined;
 
 				if (operation === 'getJob') {
 					const jobId = (this.getNodeParameter('jobId', i) as string).trim();
 					result = await pollJob.call(this, jobId, timeoutSeconds, i);
 				} else {
-					result = await extract.call(this, i, options, timeoutSeconds);
+					({ result, binary: file } = await extract.call(this, i, options, timeoutSeconds));
 				}
 
 				const threshold = this.getNodeParameter('confidenceThreshold', i, 0.9) as number;
@@ -121,6 +127,7 @@ export class Refractr implements INodeType {
 				// Pass the file on, so whoever reviews the result can open the document.
 				const output: INodeExecutionData = { json, pairedItem: { item: i } };
 				if (items[i].binary) output.binary = items[i].binary;
+				if (file) output.binary = { ...output.binary, data: file };
 
 				if (routeByConfidence && review.needsReview) needsReview.push(output);
 				else confident.push(output);
@@ -143,12 +150,18 @@ export class Refractr implements INodeType {
 	}
 }
 
+interface Extraction {
+	result: ExtractionResult;
+	/** The file, when it came from a URL or base64 rather than a binary field. */
+	binary?: IBinaryData;
+}
+
 async function extract(
 	this: IExecuteFunctions,
 	itemIndex: number,
 	options: IDataObject,
 	timeoutSeconds: number,
-): Promise<ExtractionResult> {
+): Promise<Extraction> {
 	const schemaMode = this.getNodeParameter('schemaMode', itemIndex) as string;
 	const template =
 		schemaMode === 'json'
@@ -173,27 +186,40 @@ async function extract(
 			});
 		}
 		body.document_text = text;
-		return await runExtraction.call(this, body, timeoutSeconds, itemIndex);
+		return { result: await runExtraction.call(this, body, timeoutSeconds, itemIndex) };
 	}
 
-	const binaryPropertyName = this.getNodeParameter('binaryPropertyName', itemIndex) as string;
-	const binaryData = this.helpers.assertBinaryData(itemIndex, binaryPropertyName);
-	const buffer = await this.helpers.getBinaryDataBuffer(itemIndex, binaryPropertyName);
-	if (buffer.length > MAX_FILE_BYTES) {
-		throw new NodeOperationError(
-			this.getNode(),
-			`The file is ${(buffer.length / 1_000_000).toFixed(1)} MB; Refractr accepts files up to about 7 MB`,
-			{ itemIndex },
-		);
-	}
-	body.document = buffer.toString('base64');
+	const file = await loadFile.call(this, inputType, itemIndex);
+	const type = detectFileType(file.data, file.mimeType, file.fileName);
+	// A downloaded or decoded file goes to the output, so whoever reviews the result can open it.
+	const binary =
+		inputType === 'binary'
+			? undefined
+			: await this.helpers.prepareBinaryData(
+					file.data,
+					file.fileName ?? `document.${type.extension}`,
+					type.mimeType,
+				);
 
+	// Text files, such as a .txt or an HTML email, are sent as text.
+	if (type.kind === 'text' || type.kind === 'html') {
+		const decoded = decodeText(file.data);
+		const text = type.kind === 'html' ? htmlToText(decoded) : decoded;
+		if (!text.trim()) {
+			throw new NodeOperationError(this.getNode(), 'The file has no text', { itemIndex });
+		}
+		body.document_text = text;
+		return { result: await runExtraction.call(this, body, timeoutSeconds, itemIndex), binary };
+	}
+
+	body.document = prepareDocument
+		.call(this, file.data, type, options, itemIndex)
+		.toString('base64');
 	const ocrMode = this.getNodeParameter('ocr', itemIndex, 'auto') as string;
-	const isImage = (binaryData.mimeType ?? '').startsWith('image/');
-	body.ocr = ocrMode === 'always' || (ocrMode === 'auto' && isImage);
+	body.ocr = ocrMode === 'always' || (ocrMode === 'auto' && type.isImage);
 
 	try {
-		return await runExtraction.call(this, body, timeoutSeconds, itemIndex);
+		return { result: await runExtraction.call(this, body, timeoutSeconds, itemIndex), binary };
 	} catch (error) {
 		// Files without a text layer fail for free, so trying without OCR first costs nothing.
 		if (
@@ -203,8 +229,132 @@ async function extract(
 			error.code === 'OCR_REQUIRED'
 		) {
 			body.ocr = true;
-			return await runExtraction.call(this, body, timeoutSeconds, itemIndex);
+			return { result: await runExtraction.call(this, body, timeoutSeconds, itemIndex), binary };
 		}
 		throw toNodeError.call(this, error, itemIndex);
 	}
+}
+
+interface LoadedFile {
+	data: Buffer;
+	mimeType?: string;
+	fileName?: string;
+}
+
+/** Gets the file from a binary field, a URL or a base64 string. */
+async function loadFile(
+	this: IExecuteFunctions,
+	inputType: string,
+	itemIndex: number,
+): Promise<LoadedFile> {
+	const fail = (message: string, description?: string) =>
+		new NodeOperationError(this.getNode(), message, { itemIndex, description });
+
+	if (inputType === 'url') {
+		const url = (this.getNodeParameter('url', itemIndex) as string).trim();
+		if (!/^https?:\/\/\S+$/i.test(url)) throw fail(`"${url}" is not an http or https link`);
+		let response: { body: Buffer; headers: IDataObject };
+		try {
+			response = (await this.helpers.httpRequest({
+				method: 'GET',
+				url,
+				encoding: 'arraybuffer',
+				returnFullResponse: true,
+				timeout: 60_000,
+			})) as { body: Buffer; headers: IDataObject };
+		} catch (error) {
+			throw new NodeOperationError(this.getNode(), error as Error, {
+				itemIndex,
+				message: `Could not download ${url}`,
+			});
+		}
+		const data = Buffer.from(response.body);
+		if (data.length === 0) throw fail(`${url} returned an empty file`);
+		const disposition = String(response.headers['content-disposition'] ?? '');
+		const fileName =
+			/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1] ||
+			new URL(url).pathname.split('/').pop();
+		return {
+			data,
+			mimeType: String(response.headers['content-type'] ?? '') || undefined,
+			fileName: fileName ? safeDecode(fileName) : undefined,
+		};
+	}
+
+	if (inputType === 'base64') {
+		let text = (this.getNodeParameter('base64', itemIndex) as string).trim();
+		let mimeType: string | undefined;
+		const dataUrl = /^data:([^;,]*)((?:;[^;,]*)*),/i.exec(text);
+		if (dataUrl) {
+			mimeType = dataUrl[1] || undefined;
+			text = text.slice(dataUrl[0].length);
+			if (!/;base64/i.test(dataUrl[2])) {
+				return { data: Buffer.from(safeDecode(text), 'utf8'), mimeType };
+			}
+		}
+		text = text.replace(/\s+/g, '');
+		if (!text) throw fail('The base64 string is empty');
+		if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(text)) {
+			throw fail('The base64 string has characters that are not base64');
+		}
+		return { data: Buffer.from(text, 'base64'), mimeType };
+	}
+
+	const binaryPropertyName = this.getNodeParameter('binaryPropertyName', itemIndex) as string;
+	const binaryData = this.helpers.assertBinaryData(itemIndex, binaryPropertyName);
+	return {
+		data: await this.helpers.getBinaryDataBuffer(itemIndex, binaryPropertyName),
+		mimeType: binaryData.mimeType,
+		fileName: binaryData.fileName,
+	};
+}
+
+function safeDecode(text: string): string {
+	try {
+		return decodeURIComponent(text);
+	} catch {
+		return text;
+	}
+}
+
+/** Keeps only the selected PDF pages and shrinks big images, then checks the upload size. */
+function prepareDocument(
+	this: IExecuteFunctions,
+	data: Buffer,
+	type: FileType,
+	options: IDataObject,
+	itemIndex: number,
+): Buffer {
+	let document = data;
+	const pages = ((options.pages as string | undefined) ?? '').trim();
+	if (pages && type.kind === 'pdf') {
+		try {
+			document = selectPdfPages(document, pages).pdf;
+		} catch (error) {
+			throw new NodeOperationError(this.getNode(), error as Error, {
+				itemIndex,
+				message: `Could not select pages "${pages}": ${(error as Error).message}`,
+				description: 'Remove Options > PDF Pages to send the whole PDF.',
+			});
+		}
+	}
+
+	if (options.shrinkImages && type.isImage) {
+		document = downscaleImage(document, MAX_IMAGE_SIDE)?.data ?? document;
+	}
+
+	if (document.length > MAX_FILE_BYTES) {
+		const hint =
+			type.kind === 'pdf'
+				? 'Set Options > PDF Pages to send only the pages you need.'
+				: type.isImage
+					? 'Add Options > Shrink Large Images to shrink it before upload.'
+					: undefined;
+		throw new NodeOperationError(
+			this.getNode(),
+			`The file is ${(document.length / 1_000_000).toFixed(1)} MB; Refractr accepts files up to about 7 MB`,
+			{ itemIndex, description: hint },
+		);
+	}
+	return document;
 }
