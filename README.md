@@ -1,10 +1,26 @@
 # n8n-nodes-refractr
 
-This is an n8n community node for [Refractr](https://refractr.io), a document extraction API. Give it an invoice, delivery note, bill of lading or any other document, as a file, scan or text, plus the fields you want, and it returns typed values with a confidence score per field. A field that isn't in the document comes back as `null`, never made up.
+This is an n8n community node for [Refractr](https://refractr.io), a document extraction API. Give it an invoice, delivery note, bill of lading or any other document, as a file, scan or text, plus the fields you want, and it returns typed values with a confidence score per field. A field that isn't in the document comes back as `null`.
 
 The node sends results it's confident about to one output and doubtful ones to a **Needs Review** output, so only those go to a person.
 
 It also prepares files before upload, in n8n and at no cost: it takes a binary field, a URL or a base64 string, sends only the PDF pages you pick, shrinks large photos and scans, and sends text and HTML files as text.
+
+## Why not the Information Extractor?
+
+We ran the same 11 public test invoices (7 fields each) through n8n's Information Extractor and through this node:
+
+| | Refractr node | Information Extractor + gpt-5-mini | Information Extractor + gpt-4o-mini |
+|---|---|---|---|
+| Fields right | **93%** | 93% | 80% |
+| Invoices fully right | **8 of 11** | 7 of 11 | 3 of 11 |
+| Time per document | **0.5–1.6 s** | 4–7 s | 1.3–2 s |
+| Scanned PDF (no text layer) | **Read with OCR** | Workflow stops | Workflow stops |
+| Confidence per field | **Yes** | No | No |
+| Routes doubtful results to review | **Built in** | Build it yourself | Build it yourself |
+| Needs an LLM credential and a prompt | **No** | Yes | Yes |
+
+The Information Extractor used its default setup (fields from attribute descriptions) on n8n Cloud 2.42.6, 12 October 2026; Refractr was measured on 26 October 2026. Fields right counts exact values in the expected format, such as `YYYY-MM-DD` dates and numeric amounts.
 
 [n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/sustainable-use-license/) workflow automation platform.
 
@@ -32,7 +48,7 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 2. Create an API key in your [dashboard](https://refractr.io/account/).
 3. In n8n, create a **Refractr API** credential and paste the key. Leave Base URL as it is.
 
-Every account gets 100 free extractions per day.
+Every account gets 20 free extractions per day, or 100 per day if you allow your documents to be used for training.
 
 ## Usage
 

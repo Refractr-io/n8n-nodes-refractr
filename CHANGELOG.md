@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- README: comparison with n8n's Information Extractor, and the free tier corrected to 20 extractions a day (100 with the training opt-in). No changes to the node.
+
 ## 0.2.0
 
 - Input: files can come from a URL or a base64 string (or data URL), besides a binary field. Downloaded and decoded files are added to the output as binary field `data`.
